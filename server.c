@@ -29,12 +29,13 @@ typedef struct {
 
 pthread_mutex_t lock;
 file_list_t* file_list;
+char PATH[100] = "./music_server";
 
 /* Functions */
 void *handle_client(void *client_info_ptr);
 void list_files(int clientSock);
 void get_diff(int clientSock);
-void send_files(int clientSock);
+void send_files(client_info_t *client_info);
 void log_client_activity(client_info_t *client_info, const char *message);
 void send_file_list(int client_sock);
 void create_file_list(const char *dir_path);
@@ -76,7 +77,7 @@ int main() {
 	}
 
 	addrLen = sizeof(struct sockaddr_in);
-	create_file_list("./music_server");
+	create_file_list(PATH);
 	printf("Server is listening on port %d...\n", PORT); 
 
 	// Handle multiple clients using threads
@@ -123,7 +124,7 @@ void *handle_client(void *client_info_ptr) {
 		} else if (strncmp(client_message, "DIFF", 4) == 0) {
 			get_diff(client_info.sock);
 		} else if (strncmp(client_message, "PULL", 4) == 0) {
-			send_files(client_info.sock);
+			send_files(&client_info);
 		} else if (strncmp(client_message, "LEAVE", 5) == 0) {
 			log_client_activity(&client_info, "Client disconnected");
 			break; // End session
@@ -145,8 +146,42 @@ void get_diff(int clientSock) {
 }
 
 // Send files requested by the client
-void send_files(int clientSock) {
-	send_file_list(clientSock);
+void send_files(client_info_t *client_info) {
+	send_file_list(client_info->sock);
+	
+	int index;
+	while (recv(client_info->sock, &index, sizeof(index), 0) > 0) {
+		if(index < 0) {
+			break;
+		}
+		
+		char buffer[BUFFER_SIZE];
+		FILE *file;
+		size_t bytes_read;
+
+		// Open the requested file in read mode
+		snprintf(buffer, sizeof(buffer), "%s/%s", PATH, file_list->file_names[index]);
+		file = fopen(buffer, "rb");
+		
+		// Get file size
+		fseek(file, 0L, SEEK_END);
+		long file_size = ftell(file);
+		send(client_info->sock, &file_size, sizeof(file_size), 0);
+		rewind(file);
+
+		// Send the file in chunks
+		while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+			if (send(client_info->sock, buffer, bytes_read, 0) < 0) {
+				printf("Failed to send file\n");
+				break;
+			}
+		}
+
+		fclose(file);
+		
+		snprintf(buffer, sizeof(buffer), "Sent file: %s", file_list->file_names[index]);
+		log_client_activity(client_info, buffer);
+	}
 }
 
 // Log client activity
@@ -168,16 +203,16 @@ void log_client_activity(client_info_t *client_info, const char *message) {
 
 // Send file list to the client
 void send_file_list(int client_sock) {
-    // First, send the number of files
-    send(client_sock, &file_list->num_files, sizeof(file_list->num_files), 0);
-    
-    // Then, send each file name and md5
-    for (int i = 0; i < file_list->num_files; i++) {
-        int len = strlen(file_list->file_names[i]) + 1;
-        send(client_sock, &len, sizeof(len), 0); // Send the length of the file name
-        send(client_sock, file_list->file_names[i], len, 0); // Send the file name
+	// First, send the number of files
+	send(client_sock, &file_list->num_files, sizeof(file_list->num_files), 0);
+	
+	// Then, send each file name and md5
+	for (int i = 0; i < file_list->num_files; i++) {
+		int len = strlen(file_list->file_names[i]) + 1;
+		send(client_sock, &len, sizeof(len), 0); // Send the length of the file name
+		send(client_sock, file_list->file_names[i], len, 0); // Send the file name
 		send(client_sock, file_list->md5s[i], 16, 0); // Send the file md5
-    }
+	}
 }
 
 // Create the file list
@@ -219,7 +254,7 @@ void create_file_list(const char *dir_path) {
 	
 	file_list->num_files = count;
 	file_list->file_names = malloc(count * sizeof(char *));
-	file_list->md5s = malloc(count * sizeof(char *));
+	file_list->md5s = malloc(count * sizeof(unsigned char *));
 	
 	// Reset directory stream and fill in file names
 	rewinddir(dir);

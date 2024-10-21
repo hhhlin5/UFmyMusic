@@ -6,6 +6,9 @@
 #include <unistd.h>			/* For close() */
 #include <string.h>			/* Support any string ops */
 
+#include <dirent.h>			/* Support any file ops */
+#include <openssl/evp.h>	/* Support md5 */
+
 /* Constants */
 #define PORT 8888
 #define BUFFER_SIZE 1024		/* The send buffer size */
@@ -18,6 +21,7 @@ typedef struct {
 } file_list_t;
 
 file_list_t* file_list;
+char PATH[100] = "./music_client";
 
 /* Functions */
 void showMenu();
@@ -51,7 +55,7 @@ int main() {
 		return 1;
 	}
 	printf("Connected to the server.\n");
-	create_file_list("./music_client");
+	create_file_list(PATH);
 
 	showMenu();
 	while (1) {
@@ -111,18 +115,25 @@ void diff_files(int clientSock) {
 	file_list_t* server_file_list = receive_file_list(clientSock);
 	
 	// Compare remote with local
-	printf("\nMissing Files in Local Client:\n");
+	int flag = 0;
 	for (int i = 0; i < server_file_list->num_files; i++) {
-		bool found = false;
+		int found = 0;
 		for (int j = 0; j < file_list->num_files; j++) {
-			if (strncmp(server_file_list->md5s[i], file_list->md5s[j], 16) == 0) {
-				found = true;
+			if (strncmp((const char*)(server_file_list->md5s[i]), (const char*)(file_list->md5s[j]), 16) == 0) {
+				found = 1;
 				break;
 			}
 		}
 		if(!found) { // If local file not found
+			if(!flag) {
+				flag = 1;
+				printf("\nMissing Files Compared to Server:\n");
+			}
 			printf("%s\n", server_file_list->file_names[i]);
 		}
+	}
+	if(!flag) {
+		printf("\nYou are up-to-date!\n");
 	}
 	
 	free_file_list(server_file_list);
@@ -135,21 +146,57 @@ void pull_files(int clientSock) {
 	file_list_t* server_file_list = receive_file_list(clientSock);
 	
 	// Compare remote with local
-	printf("\nMissing Files in Local Client:\n");
+	int flag = 0;
 	for (int i = 0; i < server_file_list->num_files; i++) {
-		bool found = false;
+		int found = 0;
 		for (int j = 0; j < file_list->num_files; j++) {
-			if (strncmp(server_file_list->md5s[i], file_list->md5s[j], 16) == 0) {
-				found = true;
+			if (strncmp((const char*)(server_file_list->md5s[i]), (const char*)(file_list->md5s[j]), 16) == 0) {
+				found = 1;
 				break;
 			}
 		}
 		if(!found) { // If local file not found
+			if(!flag) {
+				flag = 1;
+				printf("\nFetching Missing Files:\n");
+			}
 			printf("%s\n", server_file_list->file_names[i]);
+			send(clientSock, &i, sizeof(i), 0);
+			
+			// Receive file size
+			long file_size;
+			recv(clientSock, &file_size, sizeof(file_size), 0);
+
+			char buffer[BUFFER_SIZE];
+			FILE *file;
+			size_t bytes_received;
+			long total_received = 0;
+			
+			// Open the file in write mode
+			snprintf(buffer, sizeof(buffer), "%s/%s", PATH, server_file_list->file_names[i]);
+			file = fopen(buffer, "wb");
+
+			// Receive the file in chunks
+			while (total_received < file_size && (bytes_received = recv(clientSock, buffer, sizeof(buffer), 0)) > 0) {
+				fwrite(buffer, 1, bytes_received, file);
+				total_received += bytes_received;
+			}
+
+			fclose(file);
 		}
 	}
+	if(!flag) {
+		printf("\nYou are up-to-date!\n");
+	}
+	else {
+		printf("\nDone fetching!\n");
+	}
+	int i = -1;
+	send(clientSock, &i, sizeof(i), 0);
 	
 	free_file_list(server_file_list);
+	free_file_list(file_list);
+	create_file_list("./music_client");
 }
 
 // Receive the file list from the server
@@ -157,25 +204,26 @@ file_list_t *receive_file_list(int clientSock) {
 	file_list_t *server_file_list = malloc(sizeof(file_list_t));
 	
 	// Receive the number of files
-	recv(clientSock, &server_file_list->num_files, sizeof(server_file_list->num_files), 0);
+	int num;
+	recv(clientSock, &num, sizeof(num), 0);
+	server_file_list->num_files = num;
 	
 	// Allocate memory for the file names and md5s
-	server_file_list->file_names = malloc(server_file_list->num_files * sizeof(char *));
-	server_file_list->md5s = malloc(server_file_list->num_files * sizeof(char *));
+	server_file_list->file_names = malloc(num * sizeof(char *));
+	server_file_list->md5s = malloc(num * sizeof(unsigned char *));
 	
 	// Receive each file info
-	for (int i = 0; i < server_file_list->num_files; i++) {
+	for (int i = 0; i < num; i++) {
 		int len;
 		recv(clientSock, &len, sizeof(len), 0);
 		server_file_list->file_names[i] = malloc(len);
-		recv(clientSock, server_file_list->file_names[i], len, 0); // Receive the file name
-		server_file_list->file_names[i] = malloc(16);
-		recv(clientSock, server_file_list->md5s[i], 16, 0); // Receive the file md5
+		recv(clientSock, server_file_list->file_names[i], len, MSG_WAITALL); // Receive the file name
+		server_file_list->md5s[i] = malloc(16);
+		recv(clientSock, server_file_list->md5s[i], 16, MSG_WAITALL); // Receive the file md5
 	}
 	
 	return server_file_list;
 }
-
 
 // Create the file list
 void create_file_list(const char *dir_path) {
