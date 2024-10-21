@@ -7,3 +7,8 @@ log.txt
 # Ignore files under musics folder
 musics/*
 !musics/
+
+server.o
+client.o
+server
+client
