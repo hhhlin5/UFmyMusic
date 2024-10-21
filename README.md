@@ -6,7 +6,7 @@ UFmyMusic is a networked application that synchronizes music libraries across mu
 
 1. Ensure you have gcc complier installed.
 
-2. Verify that you have all required source files (client.c, server.c, and Makefile) in the project directory.
+2. Verify that you have all required source files (client.c, server.c, and makefile) and the directory files (music_server and music_client) where the server and client will manage in the project directory.
 
 3. To compile the project, navigate to the project directory and run the following command in your terminal:
 
