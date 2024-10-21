@@ -24,8 +24,9 @@ void showMenu();
 void list_files(int clientSock);
 void diff_files(int clientSock);
 void pull_files(int clientSock);
+file_list_t *receive_file_list(int clientSock);
 void create_file_list(const char *dir_path);
-void free_file_list();
+void free_file_list(file_list_t *file_list_ptr);
 
 /* The main function */
 int main() {
@@ -50,9 +51,11 @@ int main() {
 		return 1;
 	}
 	printf("Connected to the server.\n");
+	create_file_list("./music_client");
 
+	showMenu();
 	while (1) {
-		showMenu();
+		printf("\nEnter your choice: ");
 		int choice;
 		scanf("%d", &choice);
 
@@ -68,12 +71,14 @@ int main() {
 				break;
 			case 4:
 				send(clientSock, "LEAVE", 5, 0);
+				free_file_list(file_list);
 				close(clientSock); 
 				return 0;
 			default:
 				printf("Invalid choice. Try again.\n");
 		}
 	}
+	
 	return 0;
 }
 
@@ -83,37 +88,101 @@ void showMenu() {
 	printf("2. Diff Files\n");
 	printf("3. Pull File\n");
 	printf("4. Leave\n");
-	printf("Enter your choice: ");
 }
 
 // 1. List Files: Ask the server to return a list of files it currently has
 void list_files(int clientSock) {
-	char buffer[BUFFER_SIZE];
 	send(clientSock, "LIST", 4, 0);
-	recv(clientSock, buffer, BUFFER_SIZE, 0); 
-	printf("\nA List of Files that Server has:\n%s\n", buffer);
+	
+	file_list_t* server_file_list = receive_file_list(clientSock);
+	
+	printf("\nA List of Files that Server has:\n");
+	for (int i = 0; i < server_file_list->num_files; i++) {
+		printf("%s\n", server_file_list->file_names[i]);
+	}
+
+	free_file_list(server_file_list);
 }
 
 // 2. Diff (based on 1)): the client should show a "diff" of the files it has in comparison to the server);
 void diff_files(int clientSock) {
-	char buffer[BUFFER_SIZE];
 	send(clientSock, "DIFF", 4, 0);
-	memset(buffer, 0, BUFFER_SIZE); 
-	recv(clientSock, buffer, BUFFER_SIZE, 0); 
-	printf("\nFiles not on client:\n%s\n", buffer);
+	
+	file_list_t* server_file_list = receive_file_list(clientSock);
+	
+	// Compare remote with local
+	printf("\nMissing Files in Local Client:\n");
+	for (int i = 0; i < server_file_list->num_files; i++) {
+		bool found = false;
+		for (int j = 0; j < file_list->num_files; j++) {
+			if (strncmp(server_file_list->md5s[i], file_list->md5s[j], 16) == 0) {
+				found = true;
+				break;
+			}
+		}
+		if(!found) { // If local file not found
+			printf("%s\n", server_file_list->file_names[i]);
+		}
+	}
+	
+	free_file_list(server_file_list);
 }
 
 // 3. Pull (request all files identified in 2): from the server and store them locally)
 void pull_files(int clientSock) {
-
+	send(clientSock, "PULL", 4, 0);
+	
+	file_list_t* server_file_list = receive_file_list(clientSock);
+	
+	// Compare remote with local
+	printf("\nMissing Files in Local Client:\n");
+	for (int i = 0; i < server_file_list->num_files; i++) {
+		bool found = false;
+		for (int j = 0; j < file_list->num_files; j++) {
+			if (strncmp(server_file_list->md5s[i], file_list->md5s[j], 16) == 0) {
+				found = true;
+				break;
+			}
+		}
+		if(!found) { // If local file not found
+			printf("%s\n", server_file_list->file_names[i]);
+		}
+	}
+	
+	free_file_list(server_file_list);
 }
+
+// Receive the file list from the server
+file_list_t *receive_file_list(int clientSock) {
+	file_list_t *server_file_list = malloc(sizeof(file_list_t));
+	
+	// Receive the number of files
+	recv(clientSock, &server_file_list->num_files, sizeof(server_file_list->num_files), 0);
+	
+	// Allocate memory for the file names and md5s
+	server_file_list->file_names = malloc(server_file_list->num_files * sizeof(char *));
+	server_file_list->md5s = malloc(server_file_list->num_files * sizeof(char *));
+	
+	// Receive each file info
+	for (int i = 0; i < server_file_list->num_files; i++) {
+		int len;
+		recv(clientSock, &len, sizeof(len), 0);
+		server_file_list->file_names[i] = malloc(len);
+		recv(clientSock, server_file_list->file_names[i], len, 0); // Receive the file name
+		server_file_list->file_names[i] = malloc(16);
+		recv(clientSock, server_file_list->md5s[i], 16, 0); // Receive the file md5
+	}
+	
+	return server_file_list;
+}
+
 
 // Create the file list
 void create_file_list(const char *dir_path) {
 	
 	// Helper function to calculate MD5 hash of a file
-	unsigned char *compute_md5(char *filename) {
-		FILE *file = fopen(filename, "rb");
+	unsigned char *compute_md5(char *file_name) {
+		FILE *file = fopen(file_name, "rb");
 
 		EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
 		EVP_DigestInit_ex(mdctx, EVP_md5(), NULL);
@@ -170,14 +239,14 @@ void create_file_list(const char *dir_path) {
 	closedir(dir);
 }
 
-void free_file_list() {
-	if (file_list) {
-		for (int i = 0; i < file_list->num_files; i++) {
-			free(file_list->file_names[i]);
-			free(file_list->md5s[i]);
+void free_file_list(file_list_t *file_list_ptr) {
+	if (file_list_ptr) {
+		for (int i = 0; i < file_list_ptr->num_files; i++) {
+			free(file_list_ptr->file_names[i]);
+			free(file_list_ptr->md5s[i]);
 		}
-		free(file_list->file_names);
-		free(file_list->md5s);
-		free(file_list);
+		free(file_list_ptr->file_names);
+		free(file_list_ptr->md5s);
+		free(file_list_ptr);
 	}
 }
