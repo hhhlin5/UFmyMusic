@@ -1,0 +1,9 @@
+# Ignore the .vscode folder
+.vscode/
+
+# Ignore log
+log.txt
+
+# Ignore files under musics folder
+musics/*
+!musics/
