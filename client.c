@@ -94,5 +94,45 @@ void diff_files(int clientSock) {
 
 // 3. Pull (request all files identified in 2): from the server and store them locally)
 void pull_files(int clientSock) {
+	char buffer[BUFFER_SIZE];
+    send(clientSock, "DIFF", 4, 0); // Request the diff again
+    memset(buffer, 0, BUFFER_SIZE); 
+    recv(clientSock, buffer, BUFFER_SIZE, 0); // buffer has all the files which in server but not in client
 
+    // Assume the buffer now contains a list of files separated by newlines
+    char *filename = strtok(buffer, "\n");
+    while (filename != NULL) {
+        printf("Pulling file: %s\n", filename);
+        // Request the file from the server
+        send(clientSock, filename, strlen(filename), 0);
+
+        // Receive the file data
+        FILE *file = fopen(filename, "wb"); // Open the file for writing
+        if (file == NULL) {
+            printf("Error opening file: %s\n", filename);
+            return;
+        }
+
+        // Receive the file size first
+        int file_size;
+        recv(clientSock, &file_size, sizeof(file_size), 0);
+        file_size = ntohl(file_size); // Convert from network byte order to host byte order
+
+        // Receive the file contents
+        int bytes_received = 0;
+        while (bytes_received < file_size) {
+            int bytes = recv(clientSock, buffer, BUFFER_SIZE, 0);
+            if (bytes <= 0) {
+                printf("Error receiving file: %s\n", filename);
+                fclose(file);
+                return;
+            }
+            fwrite(buffer, sizeof(char), bytes, file);
+            bytes_received += bytes;
+        }
+
+        fclose(file);
+        printf("File %s pulled successfully.\n", filename);
+        filename = strtok(NULL, "\n"); // Get the next filename
+	}
 }
