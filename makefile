@@ -9,15 +9,15 @@ CLIENT = client
 SERVER = server
 
 # Build the client and server programs
-all: $(CLIENT) $(SERVER) clean_o
+all: $(CLIENT) $(SERVER)
 
 # Compile client.c
 $(CLIENT): client.o
-	$(CC) $(CFLAGS) -o $(CLIENT) client.o
+	$(CC) $(CFLAGS) -o $(CLIENT) client.o -lssl -lcrypto
 
 # Compile server.c
 $(SERVER): server.o
-	$(CC) $(CFLAGS) -o $(SERVER) server.o
+	$(CC) $(CFLAGS) -o $(SERVER) server.o -lssl -lcrypto
 
 # Compile client object file
 client.o: client.c
@@ -25,12 +25,9 @@ client.o: client.c
 
 # Compile server object file
 server.o: server.c
-	$(CC) $(CFLAGS) -c server.c -lssl -lcrypto
-
-# Clean only object files after compilation
-clean_o:
-	rm -f *.o
+	$(CC) $(CFLAGS) -c server.c
 
 # Clean all: object files and executables
 clean:
 	rm -f *.o $(CLIENT) $(SERVER)
+	rm -f log.txt

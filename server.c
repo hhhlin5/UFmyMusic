@@ -11,24 +11,35 @@
 #include <openssl/evp.h>	/* Support md5 */
 
 /* Constants */
-#define PORT 8888		   
+#define PORT 8888
 #define BUFFER_SIZE 1024		/* The send buffer size */
 
 /* Globals */
 typedef struct {
-    int sock;
-    char client_ip[INET_ADDRSTRLEN]; // For storing client IP
-    int client_port;                 // For storing client port
+	int sock;
+	char client_ip[INET_ADDRSTRLEN];	// For storing client IP
+	int client_port;					// For storing client port
 } client_info_t;
 
+typedef struct {
+	int num_files;			// Number of files
+	char **file_names;		// Array of file names
+	unsigned char **md5s;		// Array of md5s
+} file_list_t;
+
 pthread_mutex_t lock;
+file_list_t* file_list;
+char PATH[100] = "./music_server";
 
 /* Functions */
 void *handle_client(void *client_info_ptr);
 void list_files(int clientSock);
-void send_diff(int clientSock, char *client_files);
-void send_files(int clientSock, char *requested_files);
+void get_diff(int clientSock);
+void send_files(client_info_t *client_info);
 void log_client_activity(client_info_t *client_info, const char *message);
+void send_file_list(int client_sock);
+void create_file_list(const char *dir_path);
+void free_file_list(file_list_t *file_list_ptr);
 
 
 /* The main function */
@@ -40,7 +51,7 @@ int main() {
 	unsigned int addrLen;				/* Length of address data struct */
 	
 	// Initialize mutex
-    pthread_mutex_init(&lock, NULL);
+	pthread_mutex_init(&lock, NULL);
 
 	/* Create new TCP Socket for incoming requests*/
 	if ((serverSock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
@@ -58,14 +69,16 @@ int main() {
 		printf("bind() failed\n"); 
 		return 1;
 	}
-  
+
 	/* Listen for incoming connections */
 	if (listen(serverSock, 5) < 0){
 		printf("listen() failed\n");
 		return 1;
 	}
-	printf("Server is listening on port %d...\n", PORT); 
+
 	addrLen = sizeof(struct sockaddr_in);
+	create_file_list(PATH);
+	printf("Server is listening on port %d...\n", PORT); 
 
 	// Handle multiple clients using threads
 	while ((clientSock = accept(serverSock, (struct sockaddr*)&clientAddr, &addrLen))) {
@@ -80,83 +93,134 @@ int main() {
 		client_info->client_port = ntohs(clientAddr.sin_port);
 
 		// Log client connection
-		printf("Client (%s:%d): Client connected\n", client_info->client_ip, client_info->client_port);
 		log_client_activity(client_info, "Client connected");
 
 		if (pthread_create(&client_thread, NULL, handle_client, (void*)client_info) < 0) {
 			printf("Could not create thread\n");
 			free(client_info);
-			return 1;
+			break;
 		}
-	}
-
-	if (clientSock < 0) {
-		printf("Accept failed\n");
-		return 1;
 	}
 	
 	// Cleanup
 	pthread_mutex_destroy(&lock);
+	free_file_list(file_list);
 	close(serverSock); 
 	return 0; 
 }
 
 // Handle client communication
 void *handle_client(void *client_info_ptr) {
-    client_info_t client_info;
-    memcpy(&client_info, client_info_ptr, sizeof(client_info_t));
-    free(client_info_ptr);
-    char client_message[BUFFER_SIZE];
+	client_info_t client_info;
+	memcpy(&client_info, client_info_ptr, sizeof(client_info_t));
+	free(client_info_ptr);
+	char client_message[BUFFER_SIZE];
 
-    while (recv(client_info.sock, client_message, sizeof(client_message), 0) > 0) {
-		printf("Client (%s:%d): %s\n", client_info.client_ip, client_info.client_port, client_message);
-        // Handle messages from the client
-        if (strncmp(client_message, "LIST", 4) == 0) {
-            list_files(client_info.sock);
-        } else if (strncmp(client_message, "DIFF", 4) == 0) {
-            char *client_files = client_message + 5; // Assuming file list follows 'DIFF '
-            send_diff(client_info.sock, client_files);
-        } else if (strncmp(client_message, "PULL", 4) == 0) {
-            char *requested_files = client_message + 5; // Assuming file list follows 'PULL '
-            send_files(client_info.sock, requested_files);
-        } else if (strncmp(client_message, "LEAVE", 5) == 0) {
-            log_client_activity(&client_info, "Client disconnected");
-            break; // End session
-        }
-    }
+	while (recv(client_info.sock, client_message, sizeof(client_message), 0) > 0) {
+		log_client_activity(&client_info, client_message);
+		// Handle messages from the client
+		if (strncmp(client_message, "LIST", 4) == 0) {
+			list_files(client_info.sock);
+		} else if (strncmp(client_message, "DIFF", 4) == 0) {
+			get_diff(client_info.sock);
+		} else if (strncmp(client_message, "PULL", 4) == 0) {
+			send_files(&client_info);
+		} else if (strncmp(client_message, "LEAVE", 5) == 0) {
+			log_client_activity(&client_info, "Client disconnected");
+			break; // End session
+		}
+	}
 
-    close(client_info.sock);
-    pthread_exit(NULL);
+	close(client_info.sock);
+	pthread_exit(NULL);
 }
 
 // List files available on the server
 void list_files(int clientSock) {
-    DIR *dir;
-    struct dirent *ent;
-    char file_list[BUFFER_SIZE] = {0};
-
-    if ((dir = opendir("./musics")) != NULL) {
-        while ((ent = readdir(dir)) != NULL) {
-            if (ent->d_type == DT_REG) { // Only regular files
-                strcat(file_list, ent->d_name);
-                strcat(file_list, "\n");
-            }
-        }
-        closedir(dir);
-    } else {
-        printf("Could not open directory\n");
-        return;
-    }
-
-    send(clientSock, file_list, strlen(file_list), 0);
+	send_file_list(clientSock);
 }
 
 // Send diff of files between server and client
-void send_diff(int clientSock, char *client_files) {
+void get_diff(int clientSock) {
+	send_file_list(clientSock);
+}
+
+// Send files requested by the client
+void send_files(client_info_t *client_info) {
+	send_file_list(client_info->sock);
+	
+	int index;
+	while (recv(client_info->sock, &index, sizeof(index), 0) > 0) {
+		if(index < 0) {
+			break;
+		}
+		
+		char buffer[BUFFER_SIZE];
+		FILE *file;
+		size_t bytes_read;
+
+		// Open the requested file in read mode
+		snprintf(buffer, sizeof(buffer), "%s/%s", PATH, file_list->file_names[index]);
+		file = fopen(buffer, "rb");
+		
+		// Get file size
+		fseek(file, 0L, SEEK_END);
+		long file_size = ftell(file);
+		send(client_info->sock, &file_size, sizeof(file_size), 0);
+		rewind(file);
+
+		// Send the file in chunks
+		while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+			if (send(client_info->sock, buffer, bytes_read, 0) < 0) {
+				printf("Failed to send file\n");
+				break;
+			}
+		}
+
+		fclose(file);
+		
+		snprintf(buffer, sizeof(buffer), "Sent file: %s", file_list->file_names[index]);
+		log_client_activity(client_info, buffer);
+	}
+}
+
+// Log client activity
+void log_client_activity(client_info_t *client_info, const char *message) {
+	printf("Client (%s:%d): %s\n", client_info->client_ip, client_info->client_port, message);
+	
+	pthread_mutex_lock(&lock);
+
+	FILE *log_file = fopen("log.txt", "a");
+	if (log_file != NULL) {
+		fprintf(log_file, "Client (%s:%d): %s\n", client_info->client_ip, client_info->client_port, message);
+		fclose(log_file);
+	} else {
+		printf("Could not open log file\n");
+	}
+
+	pthread_mutex_unlock(&lock);
+}
+
+// Send file list to the client
+void send_file_list(int client_sock) {
+	// First, send the number of files
+	send(client_sock, &file_list->num_files, sizeof(file_list->num_files), 0);
+	
+	// Then, send each file name and md5
+	for (int i = 0; i < file_list->num_files; i++) {
+		int len = strlen(file_list->file_names[i]) + 1;
+		send(client_sock, &len, sizeof(len), 0); // Send the length of the file name
+		send(client_sock, file_list->file_names[i], len, 0); // Send the file name
+		send(client_sock, file_list->md5s[i], 16, 0); // Send the file md5
+	}
+}
+
+// Create the file list
+void create_file_list(const char *dir_path) {
 	
 	// Helper function to calculate MD5 hash of a file
-	unsigned char *compute_md5(const char *filename) {
-		FILE *file = fopen(filename, "rb");
+	unsigned char *compute_md5(char *file_name) {
+		FILE *file = fopen(file_name, "rb");
 
 		EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
 		EVP_DigestInit_ex(mdctx, EVP_md5(), NULL);
@@ -175,30 +239,52 @@ void send_diff(int clientSock, char *client_files) {
 		return md5_hash;
 	}
 	
-    // Here you should compare the server's files with the client's files
-    // and generate a diff (simplified for the example)
-    char diff_message[BUFFER_SIZE] = "Diff: No differences\n";
-    send(clientSock, diff_message, strlen(diff_message), 0);
+	DIR *dir = opendir(dir_path);
+	file_list = malloc(sizeof(file_list_t));
+	
+	int count = 0;
+	struct dirent *entry;
+	
+	// Count files in the directory first
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type == DT_REG) { // Only regular files
+			count++;
+		}
+	}
+	
+	file_list->num_files = count;
+	file_list->file_names = malloc(count * sizeof(char *));
+	file_list->md5s = malloc(count * sizeof(unsigned char *));
+	
+	// Reset directory stream and fill in file names
+	rewinddir(dir);
+	count = 0;
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type == DT_REG) { // Only regular files
+			file_list->file_names[count] = strdup(entry->d_name); // Names
+			
+			char* filepath = malloc(strlen(dir_path) + strlen(entry->d_name) + 2);
+			strcpy(filepath, dir_path);
+			filepath[strlen(dir_path)] = '/';
+			filepath[strlen(dir_path) + 1] = 0;
+			strcat(filepath, entry->d_name);
+			file_list->md5s[count] = compute_md5(filepath); // md5
+			
+			count++;
+		}
+	}
+	
+	closedir(dir);
 }
 
-// Send files requested by the client
-void send_files(int clientSock, char *requested_files) {
-    // Parse the requested file list and send the requested files
-    char file_message[BUFFER_SIZE] = "Sending requested files\n";
-    send(clientSock, file_message, strlen(file_message), 0);
-}
-
-// Log client activity
-void log_client_activity(client_info_t *client_info, const char *message) {
-    pthread_mutex_lock(&lock);
-
-    FILE *log_file = fopen("log.txt", "a");
-    if (log_file != NULL) {
-        fprintf(log_file, "Client (%s:%d): %s\n", client_info->client_ip, client_info->client_port, message);
-        fclose(log_file);
-    } else {
-        printf("Could not open log file\n");
-    }
-
-    pthread_mutex_unlock(&lock);
+void free_file_list(file_list_t *file_list_ptr) {
+	if (file_list_ptr) {
+		for (int i = 0; i < file_list_ptr->num_files; i++) {
+			free(file_list_ptr->file_names[i]);
+			free(file_list_ptr->md5s[i]);
+		}
+		free(file_list_ptr->file_names);
+		free(file_list_ptr->md5s);
+		free(file_list_ptr);
+	}
 }
