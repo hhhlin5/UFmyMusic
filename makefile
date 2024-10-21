@@ -17,7 +17,7 @@ $(CLIENT): client.o
 
 # Compile server.c
 $(SERVER): server.o
-	$(CC) $(CFLAGS) -o $(SERVER) server.o
+	$(CC) $(CFLAGS) -o $(SERVER) server.o -lssl -lcrypto
 
 # Compile client object file
 client.o: client.c
@@ -25,7 +25,7 @@ client.o: client.c
 
 # Compile server object file
 server.o: server.c
-	$(CC) $(CFLAGS) -c server.c -lssl -lcrypto
+	$(CC) $(CFLAGS) -c server.c
 
 # Clean only object files after compilation
 clean_o:
@@ -34,3 +34,4 @@ clean_o:
 # Clean all: object files and executables
 clean:
 	rm -f *.o $(CLIENT) $(SERVER)
+	rm -f log.txt
