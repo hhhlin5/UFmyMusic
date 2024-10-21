@@ -1,5 +1,4 @@
 /*Included libraries*/
-
 #include <stdio.h>			/* For printf() and fprintf() */
 #include <sys/socket.h>		/* For socket(), connect(), send(), and recv() */
 #include <arpa/inet.h>		/* For sockaddr_in and inet_addr() */
@@ -9,9 +8,10 @@
 
 #include <pthread.h>		/* For thread() */
 #include <dirent.h>			/* Support any file ops */
+#include <openssl/evp.h>	/* Support md5 */
 
 /* Constants */
-#define PORT 8080		   
+#define PORT 8888		   
 #define BUFFER_SIZE 1024		/* The send buffer size */
 
 /* Globals */
@@ -24,15 +24,15 @@ typedef struct {
 pthread_mutex_t lock;
 
 /* Functions */
-void *handle_client(void *socket_desc);
-void list_files(int client_sock);
-void send_diff(int client_sock, char *client_files);
-void send_files(int client_sock, char *requested_files);
+void *handle_client(void *client_info_ptr);
+void list_files(int clientSock);
+void send_diff(int clientSock, char *client_files);
+void send_files(int clientSock, char *requested_files);
 void log_client_activity(client_info_t *client_info, const char *message);
 
 
 /* The main function */
-int main(){
+int main() {
 	int serverSock;						/* Server Socket */
 	int clientSock;						/* Client Socket */
 	struct sockaddr_in serverAddr;		/* Local address */
@@ -45,7 +45,7 @@ int main(){
 	/* Create new TCP Socket for incoming requests*/
 	if ((serverSock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
 		printf("socket() failed\n");
-		exit(1);
+		return 1;
 	}
 	
 	serverSock = socket(AF_INET, SOCK_STREAM, 0);
@@ -55,14 +55,14 @@ int main(){
 
 	/* Bind to local address structure */
 	if (bind(serverSock, (struct sockaddr *) &serverAddr, sizeof(serverAddr)) < 0){
-	  printf("bind() failed\n"); 
-	  exit(1);
+		printf("bind() failed\n"); 
+		return 1;
 	}
   
 	/* Listen for incoming connections */
 	if (listen(serverSock, 5) < 0){
 		printf("listen() failed\n");
-		exit(1);
+		return 1;
 	}
 	printf("Server is listening on port %d...\n", PORT); 
 	addrLen = sizeof(struct sockaddr_in);
@@ -80,10 +80,11 @@ int main(){
 		client_info->client_port = ntohs(clientAddr.sin_port);
 
 		// Log client connection
+		printf("Client (%s:%d): Client connected\n", client_info->client_ip, client_info->client_port);
 		log_client_activity(client_info, "Client connected");
 
 		if (pthread_create(&client_thread, NULL, handle_client, (void*)client_info) < 0) {
-			printf("Could not create thread/n");
+			printf("Could not create thread\n");
 			free(client_info);
 			return 1;
 		}
@@ -108,6 +109,7 @@ void *handle_client(void *client_info_ptr) {
     char client_message[BUFFER_SIZE];
 
     while (recv(client_info.sock, client_message, sizeof(client_message), 0) > 0) {
+		printf("Client (%s:%d): %s\n", client_info.client_ip, client_info.client_port, client_message);
         // Handle messages from the client
         if (strncmp(client_message, "LIST", 4) == 0) {
             list_files(client_info.sock);
@@ -128,12 +130,12 @@ void *handle_client(void *client_info_ptr) {
 }
 
 // List files available on the server
-void list_files(int client_sock) {
+void list_files(int clientSock) {
     DIR *dir;
     struct dirent *ent;
     char file_list[BUFFER_SIZE] = {0};
 
-    if ((dir = opendir(".")) != NULL) {
+    if ((dir = opendir("./musics")) != NULL) {
         while ((ent = readdir(dir)) != NULL) {
             if (ent->d_type == DT_REG) { // Only regular files
                 strcat(file_list, ent->d_name);
@@ -142,38 +144,60 @@ void list_files(int client_sock) {
         }
         closedir(dir);
     } else {
-        printf("Could not open directory/n");
+        printf("Could not open directory\n");
         return;
     }
 
-    send(client_sock, file_list, strlen(file_list), 0);
+    send(clientSock, file_list, strlen(file_list), 0);
 }
 
 // Send diff of files between server and client
-void send_diff(int client_sock, char *client_files) {
+void send_diff(int clientSock, char *client_files) {
+	
+	// Helper function to calculate MD5 hash of a file
+	unsigned char *compute_md5(const char *filename) {
+		FILE *file = fopen(filename, "rb");
+
+		EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+		EVP_DigestInit_ex(mdctx, EVP_md5(), NULL);
+
+		unsigned char buffer[1024];
+		int bytes;
+		while ((bytes = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+			EVP_DigestUpdate(mdctx, buffer, bytes);
+		}
+
+		unsigned char *md5_hash = malloc(EVP_MD_size(EVP_md5()));
+		EVP_DigestFinal_ex(mdctx, md5_hash, NULL);
+
+		fclose(file);
+		EVP_MD_CTX_free(mdctx);
+		return md5_hash;
+	}
+	
     // Here you should compare the server's files with the client's files
     // and generate a diff (simplified for the example)
     char diff_message[BUFFER_SIZE] = "Diff: No differences\n";
-    send(client_sock, diff_message, strlen(diff_message), 0);
+    send(clientSock, diff_message, strlen(diff_message), 0);
 }
 
 // Send files requested by the client
-void send_files(int client_sock, char *requested_files) {
+void send_files(int clientSock, char *requested_files) {
     // Parse the requested file list and send the requested files
     char file_message[BUFFER_SIZE] = "Sending requested files\n";
-    send(client_sock, file_message, strlen(file_message), 0);
+    send(clientSock, file_message, strlen(file_message), 0);
 }
 
 // Log client activity
 void log_client_activity(client_info_t *client_info, const char *message) {
     pthread_mutex_lock(&lock);
 
-    FILE *log_file = fopen("client_log.txt", "a");
+    FILE *log_file = fopen("log.txt", "a");
     if (log_file != NULL) {
         fprintf(log_file, "Client (%s:%d): %s\n", client_info->client_ip, client_info->client_port, message);
         fclose(log_file);
     } else {
-        perror("Could not open log file");
+        printf("Could not open log file\n");
     }
 
     pthread_mutex_unlock(&lock);

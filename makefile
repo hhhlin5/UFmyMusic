@@ -25,7 +25,7 @@ client.o: client.c
 
 # Compile server object file
 server.o: server.c
-	$(CC) $(CFLAGS) -c server.c
+	$(CC) $(CFLAGS) -c server.c -lssl -lcrypto
 
 # Clean only object files after compilation
 clean_o:
