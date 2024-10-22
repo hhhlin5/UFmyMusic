@@ -24,7 +24,7 @@ To start the server, use the following command:
 
 2. The server can multithreaded to handle multiple concurrent client requests. 
 
-3. The server can store/retrieve historical information about each client in a file.
+3. The server can store/retrieve historical information about each client in ./log.txt.
 
 ## Running the Client
 To start the client, use the following command in a separate terminal window:
